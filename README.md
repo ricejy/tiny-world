@@ -24,7 +24,7 @@ Try:
 - `lib/world.ts`: Pure planning, state transitions, and the explicitly limited demo parser.
 - `app/page.tsx`: Island, missions, command desk, probability inspector, and session connection UI.
 
-Jev is pinned to `jev-1.13.0`. No generated prose or code controls the game. Low action/destination confidence or uncertain targets pause for review. These are experimental thresholds, not calibrated correctness guarantees. Multi-action instructions are rejected; give one instruction at a time. Artwork is fixed; the app moves sprites and renders weather/light effects.
+Jev is pinned to `jev-1.13.0`. No generated prose or code controls the game. Low action/destination confidence or uncertain targets pause for review. These are experimental thresholds, not calibrated correctness guarantees. Give one instruction at a time. If the leading answer is unsupported but a supported alternative has at least 20% probability and selected targets, the app offers that alternative for explicit approval. It never executes the alternative automatically. Artwork is fixed; the app moves sprites and renders weather/light effects.
 
 World progress lasts for the current page session. Missions reset the island. Garden moisture and battery arithmetic run in code. API cost estimates use the documented input rate of $0.042 per million tokens; check TypeSafe pricing before relying on this estimate.
 
@@ -44,7 +44,7 @@ The Sites/Vinext starter provides React, TypeScript, Tailwind, shadcn controls, 
 
 ## Validation and limits
 
-Automated tests cover exclusions, all-robot selection, unsupported commands, ambiguous destinations, uncertainty review, and numeric bounds. All three missions and the review flow were exercised in the browser. A live TypeSafe request has not yet been tested because no API key was supplied; the demo is independently usable.
+Automated tests cover exclusions, all-robot selection, unsupported commands, ambiguous destinations, uncertainty review, and numeric bounds. All three missions and the review flow were exercised in the browser. The user has tested the live TypeSafe integration. Automated tests replay the reported action probabilities with fixture light answers; they do not certify model accuracy. The demo is independently usable.
 
 The game intentionally supports a small action vocabulary. Demo rules understand examples and simple variations; live semantic behavior still needs evaluation with real commands. Model confidence describes the returned distribution, not the probability that an action is correct.
 

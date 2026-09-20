@@ -48,3 +48,8 @@ next-env.d.ts
 /.codex/
 /outputs/
 /work/
+
+# Local Cloudflare secrets
+.dev.vars*
+credentials/
+secrets/
