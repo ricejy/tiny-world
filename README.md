@@ -50,3 +50,20 @@ The game intentionally supports a small action vocabulary. Demo rules understand
 
 [TypeSafe documentation](https://docs.typesafe.ai/introduction)
 
+
+## Autonomous survival mode
+
+Open `/autonomous` or choose **Autonomous run** in the sandbox. The objective is 100 fish and 100 crops with all three robots alive. Start with the explicitly labeled demo controller, or connect a session TypeSafe key to let Jev choose every task.
+
+- The simulation advances in 250 ms steps while running. Decisions are requested approximately every five simulated seconds, or after an important event with at least two seconds between requests. Only one request can be in flight; a run stops requesting after 200 attempts.
+- Each Jev request carries current progress, weather, crop state, robot health/battery/tasks, travel times to shelter, recent events, and mechanics. Three independent Choice questions choose tasks for Pip, Moss, and Dot. No generated explanations are displayed.
+- Fishing attempts last 8–16 seconds. Yields: 18% zero fish, 76% uniformly 1–5 fish, 6% uniformly 7–10 fish. Harvests last 6–12 seconds and yield 2–6 crops, bounded by shared ripe stock. Reassigning the same active job preserves its timer.
+- Crops regrow in batches of 4–8 every 18–28 seconds while moisture exceeds 20%. The garden holds at most 24 ripe crops.
+- Clear weather lasts 70–100 seconds, warnings last 20 seconds, and storms last 20–35 seconds. Storms deal 6 health per second outdoors, including on the way to shelter. The cabin repairs 3 health per second and restores 1.5 battery per second. The charging dock is outside and restores 8 battery per second.
+- Work consumes battery. At zero battery, work stops and emergency movement slows. A robot reaching zero health ends the run. There is no automatic rescue overriding Jev.
+- Pause, reset, controller changes, and terminal outcomes invalidate pending responses. Weather changes discard stale responses; per-robot job versions prevent overwriting completed or manually interrupted tasks. API errors pause the run.
+- The page pauses when hidden. Closing or refreshing loses the run and the session key. This is a browser simulation, not a background server worker.
+- Seeds reproduce weather independently of work-related random draws. Identical seeds and identical decisions reproduce the complete run; different decisions consume work randomness differently and affect crop growth through moisture.
+- Cost estimates use reported input tokens at the documented rate; cancelled requests or missing usage can make the displayed total incomplete.
+
+`lib/simulation.ts` owns mechanics and the demo controller; `app/api/autonomy/route.ts` owns validated Jev requests; `app/autonomous/page.tsx` owns the run controls and request lifecycle. Test with `node --test tests/*.test.mjs`. The baseline controller is tested across multiple seeds; autonomous live Jev behavior still needs evaluation with a real key.
