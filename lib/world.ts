@@ -23,7 +23,7 @@ export type NoulAnswer = { type: "noul"; noul: number };
 export type ScoreAnswer = { type: "score"; score: number; confidence: number; probabilities: Record<string, number> };
 export type Answer = ChoiceAnswer | NoulAnswer | ScoreAnswer;
 export type Interpretation = { answers: Record<string, Answer>; model: string; mode: "demo" | "live"; latency: number; usage?: { input_tokens: number; output_tokens: number }; };
-export type Plan = { action: Action; robots: RobotId[]; lights: LightId[]; destination: Place | null; brightness: number; needsReview: boolean; message: string; supported: boolean };
+export type Plan = { action: Action; robots: RobotId[]; lights: LightId[]; destination: Place | null; brightness: number; needsReview: boolean; reviewReason?: string; message: string; supported: boolean };
 export const ACTION_NAMES: Record<Action, string> = { move: "Move", water: "Water plants", lights_on: "Turn lights on", lights_off: "Turn lights off", rest: "Rest", unknown: "Not supported" };
 export function publicState(command: string, world: World) {
   const worker = [...world.robots].filter(r => !["charging", "resting"].includes(r.status)).sort((a,b) => b.battery-a.battery)[0];
@@ -32,7 +32,19 @@ export function publicState(command: string, world: World) {
 export function makePlan(result: Interpretation): Plan {
   const getChoice = (key: string) => { const a=result.answers[key]; return a?.type === "choice" ? a : null; };
   const actionAnswer=getChoice("action");
-  const action=(actionAnswer && Object.hasOwn(ACTION_NAMES,actionAnswer.choice) ? actionAnswer.choice : "unknown") as Action;
+  let action=(actionAnswer && Object.hasOwn(ACTION_NAMES,actionAnswer.choice) ? actionAnswer.choice : "unknown") as Action;
+  let reviewReason:string|undefined;
+  // A rejected command may still have a meaningful alternative. Show it as a
+  // proposal only; retain the raw model answer and require explicit approval.
+  if(action==="unknown" && result.mode==="live" && actionAnswer){
+    const alternative=Object.entries(actionAnswer.probabilities)
+      .filter(([id,p])=>id!=="unknown"&&Object.hasOwn(ACTION_NAMES,id)&&p>=.2)
+      .sort((a,b)=>b[1]-a[1])[0];
+    if(alternative){
+      action=alternative[0] as Action;
+      reviewReason=`Jev’s top answer was unsupported. Its alternative was ${ACTION_NAMES[action].toLowerCase()} (${Math.round(alternative[1]*100)}%). Confirm the action and targets below; nothing has changed yet.`;
+    }
+  }
   const targetKeys = action.startsWith("lights") ? LIGHTS.map(l=>`light_${l.id}`) : ["pip","moss","dot"].map(id=>`robot_${id}`);
   const yes=(key:string) => { const a=result.answers[key]; return a?.type === "noul" ? a.noul : 0; };
   const robots=(["pip","moss","dot"] as RobotId[]).filter(id=>yes(`robot_${id}`)>.5);
@@ -42,13 +54,13 @@ export function makePlan(result: Interpretation): Plan {
   const s=result.answers.brightness;
   const brightness=s?.type === "score" ? Math.max(.25, Math.min(1,(s.score+1)/3)) : .65;
   const supported=action!=="unknown" && (action.startsWith("lights") ? lights.length>0 : robots.length>0);
-  const needsReview=!!supported && ((actionAnswer?.confidence ?? 0)<.55 || targetKeys.some(k=>yes(k)>.25 && yes(k)<.75) || (action==="move" && (!destination || (destAnswer?.confidence??0)<.55)));
+  const needsReview=!!supported && (!!reviewReason || (actionAnswer?.confidence ?? 0)<.55 || targetKeys.some(k=>yes(k)>.25 && yes(k)<.75) || (action==="move" && (!destination || (destAnswer?.confidence??0)<.55)));
   let message = !supported ? "I couldn’t find a supported action and target. Try naming a robot or a light." : action==="move" ? `Send ${robots.join(", ")} to ${destination ? PLACES[destination].name.toLowerCase() : "a place you choose"}.` : action==="water" ? `${robots.join(", ")} will water the garden.` : action==="rest" ? `${robots.join(", ")} will rest at the cabin.` : `Turn ${lights.map(id=>id==="garden"?"the garden lantern":`the ${id} light`).join(" and ")} ${action==="lights_on"?"on":"off"}.`;
   message=message[0].toUpperCase()+message.slice(1);
-  return { action, robots, lights, destination, brightness, needsReview, message, supported };
+  return { action, robots, lights, destination, brightness, needsReview, reviewReason, message, supported };
 }
 export function applyPlan(world: World, plan: Plan): World {
-  if (!plan.supported || (plan.action==="move" && !plan.destination)) return world;
+  if (!plan.supported || plan.needsReview || (plan.action==="move" && !plan.destination)) return world;
   if(plan.action.startsWith("lights")) return {...world,lights:{...world.lights,...Object.fromEntries(plan.lights.map(id=>[id,plan.action==="lights_on"?plan.brightness:0]))}};
   const destination = plan.action==="water" ? "garden" : plan.action==="rest" ? "cabin" : plan.destination!;
   return { ...world, robots:world.robots.map((r,index)=>plan.robots.includes(r.id) ? {...r,place:destination,status:destination==="charger"?"charging":plan.action==="water"?"watering":plan.action==="rest"?"resting":"idle",battery:Math.max(0,r.battery-2),x:PLACES[destination].x+(index-1)*3.5,y:PLACES[destination].y+index*2} : r),moisture:plan.action==="water" ? Math.min(100,world.moisture+36*plan.robots.length) : world.moisture };

@@ -59,3 +59,32 @@ test('water and battery stay bounded; API context omits rendering coordinates', 
   assert.equal('x' in state.robots[0],false);
   assert.equal(state.preferred_available_worker,'moss');
 });
+
+test('reported 68/32 rejection offers the lighting alternative for review, never auto-runs it', () => {
+  const before=initialWorld();
+  // Action and robot numbers replay the report. Light answers are a controlled
+  // fixture because the report did not include the raw light answers.
+  const answer=interpretDemo('Turn on all the lights except the cabin.',before);
+  answer.mode='live';
+  answer.answers.action={type:'choice',choice:'unknown',confidence:.61,
+    probabilities:{unknown:.68,lights_on:.32,move:0,water:0,rest:0,lights_off:0}};
+  for(const [id,p] of Object.entries({pip:.12,moss:.10,dot:.08})) answer.answers[`robot_${id}`].noul=p;
+  const plan=makePlan(answer);
+  assert.equal(plan.action,'lights_on');
+  assert.equal(plan.needsReview,true);
+  assert.match(plan.reviewReason,/32%/);
+  assert.deepEqual(plan.lights,['porch','garden']);
+  assert.equal(applyPlan(before,plan),before);
+  const after=applyPlan(before,{...plan,needsReview:false});
+  assert.ok(after.lights.porch>0&&after.lights.garden>0);
+  assert.equal(after.lights.cabin,0);
+  assert.equal(answer.answers.action.choice,'unknown');
+});
+
+test('a strong rejection with no meaningful alternative remains unsupported', () => {
+  const answer=interpretDemo('Turn on all lights',initialWorld());
+  answer.mode='live';
+  answer.answers.action.choice='unknown';
+  answer.answers.action.probabilities={unknown:.96,lights_on:.04};
+  assert.equal(makePlan(answer).supported,false);
+});
