@@ -32,7 +32,7 @@ test('weather sequence is independent of work-related random draws',()=>{
   let a=running(77),b=running(77);
   for(const s of [a,b])s.robots.forEach(r=>r.health=99);
   a=assignDecisions(a,{pip:'fish',moss:'harvest'});
-  a=assignDecisions(a,{pip:'shelter',moss:'shelter',dot:'shelter'});
+  a=assignDecisions(a,{pip:'shelter',moss:'shelter',dot:'shelter'},undefined,true);
   b=assignDecisions(b,{pip:'shelter',moss:'shelter',dot:'shelter'});
   for(let i=0;i<1200;i++){
     a=tick(a);b=tick(b);
@@ -124,4 +124,55 @@ test('empty battery at the cabin can reach the dock and recharge without healing
   s=assignDecisions(s,{pip:'charge'});s=advance(s,40);
   assert.equal(s.robots[0].battery,100);assert.equal(s.robots[0].phase,'idle');
   assert.deepEqual({x:s.robots[0].x,y:s.robots[0].y},LOCATIONS.charger);
+});
+
+test('Moss cannot abandon unfinished cabin repairs for a harvest and bounce back',()=>{
+  let s=running();Object.assign(s.robots[1],LOCATIONS.cabin,{health:70,battery:90});
+  s=assignDecisions(s,{moss:'shelter'});s=advance(s,3);
+  const question=buildQuestions(agentState(s).robots).moss;
+  assert.equal(question.criteria.harvest,undefined);
+  s=assignDecisions(s,{moss:'harvest'},snapshot(s));s=advance(s,2);
+  assert.equal(s.robots[1].task,'shelter');assert.equal(s.robots[1].x,LOCATIONS.cabin.x);
+  s=advance(s,6);assert.equal(s.robots[1].health,100);
+  s=assignDecisions(s,{moss:'harvest'},snapshot(s));assert.equal(s.robots[1].task,'harvest');
+});
+
+test('Moss commits to one harvest through travel and work unless conditions become urgent',()=>{
+  let s=running();Object.assign(s.robots[1],LOCATIONS.cabin,{health:98,battery:90});
+  s=assignDecisions(s,{moss:'harvest'});s=advance(s,3);
+  const job=s.robots[1].job;
+  assert.equal(buildQuestions(agentState(s).robots).moss.criteria.shelter,undefined);
+  s=assignDecisions(s,{moss:'shelter'},snapshot(s));assert.equal(s.robots[1].task,'harvest');assert.equal(s.robots[1].job,job);
+  s=advance(s,17);assert.ok(s.crops>0);
+});
+
+test('storm shelter cannot be abandoned between decisions, but danger can interrupt work',()=>{
+  let s=running();s.weather='warning';s.weatherRemaining=18;
+  Object.assign(s.robots[1],LOCATIONS.cabin,{health:100,battery:90,task:'shelter',phase:'work'});
+  s=assignDecisions(s,{moss:'harvest'},snapshot(s));assert.equal(s.robots[1].task,'shelter');
+  s=running();s=assignDecisions(s,{moss:'harvest'});s.weather='warning';
+  s=assignDecisions(s,{moss:'shelter'},snapshot(s));assert.equal(s.robots[1].task,'shelter');
+});
+
+test('low battery and critical health can interrupt a committed work task',()=>{
+  for(const [field,value,task] of [['battery',19,'charge'],['health',35,'shelter']]){
+    let s=assignDecisions(running(),{moss:'harvest'});s.robots[1][field]=value;
+    assert.ok(availableTasks(s,s.robots[1]).includes(task));
+    s=assignDecisions(s,{moss:task},snapshot(s));assert.equal(s.robots[1].task,task);
+  }
+});
+
+test('charging completes before collection resumes but a storm can interrupt it',()=>{
+  let s=running();Object.assign(s.robots[1],LOCATIONS.charger,{battery:30});
+  s=assignDecisions(s,{moss:'charge'});s=assignDecisions(s,{moss:'harvest'},snapshot(s));
+  assert.equal(s.robots[1].task,'charge');
+  s.weather='warning';assert.ok(availableTasks(s,s.robots[1]).includes('shelter'));
+  s=assignDecisions(s,{moss:'shelter'},snapshot(s));assert.equal(s.robots[1].task,'shelter');
+});
+
+test('manual controls can override autonomous commitment and invalidate pending answers',()=>{
+  let s=assignDecisions(running(),{moss:'harvest'});const old=snapshot(s);
+  s=assignDecisions(s,{moss:'shelter'},undefined,true);
+  assert.equal(s.robots[1].task,'shelter');
+  s=assignDecisions(s,{moss:'harvest'},old);assert.equal(s.robots[1].task,'shelter');
 });

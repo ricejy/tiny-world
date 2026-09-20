@@ -36,6 +36,15 @@ export function availableTasks(s:Simulation,r:Bot):Task[]{
   if(s.crops<100&&s.moisture<60&&r.battery>0)options.push('water');
   if(r.battery<100)options.push('charge');
   if(shelterNeeded)options.push('shelter');
+  // Jev chooses a job, then keeps it through travel and one work cycle.
+  // Recovery is a complete job too; reevaluation must not cancel it halfway.
+  if(continuing){
+    if(r.task==='shelter')return ['continue','shelter'];
+    const urgentShelter=s.weather!=='clear'||r.health<=35;
+    if(r.task==='charge')return urgentShelter?['continue','charge','shelter']:['continue','charge'];
+    return options.filter(task=>task==='continue'||task===r.task||task==='shelter'&&urgentShelter||task==='charge'&&r.battery<20);
+  }
+  if(isSheltered(r)&&s.weather!=='clear')return ['shelter'];
   return options.length?options:['wait'];
 }
 function finishMaintenance(s:Simulation,r:Bot,text:string){
@@ -48,9 +57,9 @@ export function createSimulation(seed=1):Simulation{
   ] as const).map(([id,name,place,battery])=>({id,name,...LOCATIONS[place],health:100,battery,task:'wait',phase:'idle',destination:place,remaining:0,duration:0,job:0}))};
   s.weatherRemaining=between(s,70,100,'weatherRng');s.growthRemaining=between(s,18,28,'growthRng');return s;
 }
-function begin(s:Simulation,r:Bot,task:Task){
+function begin(s:Simulation,r:Bot,task:Task,manual=false){
   if(task==='continue'||r.phase==='dead')return;
-  if(!availableTasks(s,r).includes(task)){record(s,`${r.name}: task no longer useful; waiting for a fresh decision.`,'decision');return;}
+  if(!manual&&!availableTasks(s,r).includes(task)){record(s,`${r.name}: task no longer useful; waiting for a fresh decision.`,'decision');return;}
   // Keeping the same job cannot reset its timer or reroll its reward.
   if(r.task===task && (r.phase==='travel'||r.phase==='work'))return;
   if(task==='harvest'&&s.ripe<=0){record(s,`${r.name}: harvest unavailable; continuing current task.`,'decision');return;}
@@ -61,14 +70,14 @@ function begin(s:Simulation,r:Bot,task:Task){
   r.remaining=r.duration;r.phase=distance(r,r.destination)>.15?'travel':'work';
   record(s,`${r.name}: ${TASK_LABELS[task].toLowerCase()}.`,'decision');
 }
-export function assignDecisions(state:Simulation,decisions:Partial<Decisions>,expected?:Snapshot):Simulation{
+export function assignDecisions(state:Simulation,decisions:Partial<Decisions>,expected?:Snapshot,manual=false):Simulation{
   if(state.status!=='running')return state;
   if(expected&&expected.weatherVersion!==state.weatherVersion)return state;
   const s=copy(state);
   for(const r of s.robots){
     const task=decisions[r.id];
     if(!task||!TASKS.includes(task)||expected&&expected.jobs[r.id]!==r.job)continue;
-    begin(s,r,task);
+    begin(s,r,task,manual);
   }
   return s;
 }
@@ -129,5 +138,5 @@ export function demoDecisions(s:Simulation):Decisions{
   return actions;
 }
 export function agentState(s:Simulation){
-  return {goal:{fish:100,crops:100,all_robots_must_survive:true},time:Math.round(s.time),progress:{fish:s.fish,crops:s.crops},weather:{phase:s.weather,seconds_remaining:Math.ceil(s.weatherRemaining),seconds_until_storm:s.weather==='storm'?0:Math.ceil(s.weatherRemaining)+(s.weather==='clear'?20:0)},garden:{ripe_crops:s.ripe,moisture:Math.round(s.moisture),growth_seconds_remaining:Math.ceil(s.growthRemaining)},robots:s.robots.map(r=>({id:r.id,name:r.name,health:Math.round(r.health),battery:Math.round(r.battery),task:r.task,phase:r.phase,destination:r.destination,task_seconds_remaining:Math.ceil(r.remaining),sheltered:isSheltered(r),available_tasks:availableTasks(s,r),needs_new_task:r.phase==='idle',travel_seconds_to_cabin:Math.ceil(travelSeconds(r,'cabin'))})),rules:{fish_attempt_seconds:[8,16],fish_yield:'18% no catch; 76% 1–5 fish; 6% 7–10 fish',harvest_seconds:[6,12],harvest_yield:[2,6],storm_damage_per_second:6,cabin_repairs_per_second:3,cabin_battery_per_second:0,charger_battery_per_second:8,charger_is_outdoors:true,zero_battery:'Work stops; emergency travel is much slower.',continue:'Preserves an unfinished useful task. Charging ends at 100% battery; shelter ends at full health when skies are clear. Completed tasks cannot be continued.',cabin_and_charger_capacity:3},recent_events:s.events.slice(0,6).map(e=>e.text)};
+  return {goal:{fish:100,crops:100,all_robots_must_survive:true},time:Math.round(s.time),progress:{fish:s.fish,crops:s.crops},weather:{phase:s.weather,seconds_remaining:Math.ceil(s.weatherRemaining),seconds_until_storm:s.weather==='storm'?0:Math.ceil(s.weatherRemaining)+(s.weather==='clear'?20:0)},garden:{ripe_crops:s.ripe,moisture:Math.round(s.moisture),growth_seconds_remaining:Math.ceil(s.growthRemaining)},robots:s.robots.map(r=>({id:r.id,name:r.name,health:Math.round(r.health),battery:Math.round(r.battery),task:r.task,phase:r.phase,destination:r.destination,task_seconds_remaining:Math.ceil(r.remaining),sheltered:isSheltered(r),available_tasks:availableTasks(s,r),needs_new_task:r.phase==='idle',travel_seconds_to_cabin:Math.ceil(travelSeconds(r,'cabin'))})),rules:{fish_attempt_seconds:[8,16],fish_yield:'18% no catch; 76% 1–5 fish; 6% 7–10 fish',harvest_seconds:[6,12],harvest_yield:[2,6],storm_damage_per_second:6,cabin_repairs_per_second:3,cabin_battery_per_second:0,charger_battery_per_second:8,charger_is_outdoors:true,zero_battery:'Work stops; emergency travel is much slower.',task_commitment:'Autonomous jobs persist through travel and one work cycle. Repairs and charging finish before changing jobs. Storm warnings, health at or below 35%, or battery below 20% permit appropriate safety interruptions. Manual controls can interrupt any job.',continue:'Preserves an unfinished useful task. Charging ends at 100% battery; shelter ends at full health when skies are clear. Completed tasks cannot be continued.',cabin_and_charger_capacity:3},recent_events:s.events.slice(0,6).map(e=>e.text)};
 }
