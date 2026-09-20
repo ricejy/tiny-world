@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createSimulation,tick,assignDecisions,demoDecisions,snapshot,LOCATIONS} from '../lib/simulation.ts';
+import {createSimulation,tick,assignDecisions,demoDecisions,snapshot,LOCATIONS,agentState,availableTasks} from '../lib/simulation.ts';
+import {buildQuestions} from '../lib/autonomy-questions.ts';
 const running=(seed=42)=>({...createSimulation(seed),status:'running'});
 const advance=(s,seconds)=>{for(let t=0;t<seconds;t+=.25)s=tick(s);return s;};
 
@@ -29,6 +30,7 @@ test('same seed and decisions replay exactly; different seeds change task durati
 });
 test('weather sequence is independent of work-related random draws',()=>{
   let a=running(77),b=running(77);
+  for(const s of [a,b])s.robots.forEach(r=>r.health=99);
   a=assignDecisions(a,{pip:'fish',moss:'harvest'});
   a=assignDecisions(a,{pip:'shelter',moss:'shelter',dot:'shelter'});
   b=assignDecisions(b,{pip:'shelter',moss:'shelter',dot:'shelter'});
@@ -44,15 +46,15 @@ test('storm hurts exposed robots, travelling toward the cabin is not shelter, an
   assert.equal(s.robots[0].phase,'dead');assert.equal(s.status,'lost');assert.ok(s.robots[1].health>=80);
   assert.equal(tick(s),s);
 });
-test('cabin restores health and emergency battery; work does not progress on an empty battery',()=>{
+test('cabin heals but empty batteries still halt work',()=>{
   let s=running();Object.assign(s.robots[1],LOCATIONS.cabin,{health:50,battery:0});
   s=assignDecisions(s,{pip:'fish'});s.robots[0].battery=0;const remaining=s.robots[0].remaining;
-  s=advance(s,2);assert.equal(s.robots[0].remaining,remaining);assert.ok(s.robots[1].health>50&&s.robots[1].battery>0);
+  s=advance(s,2);assert.equal(s.robots[0].remaining,remaining);assert.ok(s.robots[1].health>50);assert.equal(s.robots[1].battery,0);
 });
 test('stale weather discards a response; changed jobs cannot be overwritten by stale decisions',()=>{
   let s=running();const expected=snapshot(s);s.weatherVersion++;
   assert.equal(assignDecisions(s,{pip:'fish'},expected),s);
-  s=running();const before=snapshot(s);s=assignDecisions(s,{pip:'shelter'});
+  s=running();s.robots[0].health=70;const before=snapshot(s);s=assignDecisions(s,{pip:'shelter'});
   s=assignDecisions(s,{pip:'fish',moss:'harvest'},before);
   assert.equal(s.robots[0].task,'shelter');assert.equal(s.robots[1].task,'harvest');
 });
@@ -67,4 +69,59 @@ test('baseline controller can complete several seeded runs without a hidden resc
     assert.equal(s.status,'won',`seed ${seed}: ${s.fish} fish / ${s.crops} crops, status ${s.status}`);
     assert.ok(s.robots.every(r=>r.health>0));
   }
+});
+
+test('cabin heals health without charging the battery',()=>{
+  let s=running();Object.assign(s.robots[0],LOCATIONS.cabin,{health:70,battery:30,task:'shelter',phase:'work'});
+  s=advance(s,2);assert.equal(s.robots[0].health,76);assert.equal(s.robots[0].battery,30);
+});
+test('a recovered shelter task completes in clear weather and accepts a new work assignment',()=>{
+  let s=running();Object.assign(s.robots[0],LOCATIONS.cabin,{health:100,battery:100,task:'shelter',phase:'work'});
+  const oldJob=s.robots[0].job;s=tick(s);
+  assert.equal(s.robots[0].phase,'idle');assert.equal(s.robots[0].task,'wait');assert.equal(s.robots[0].job,oldJob+1);
+  s=assignDecisions(s,{pip:'fish'});assert.equal(s.robots[0].phase,'travel');assert.equal(s.robots[0].task,'fish');
+});
+test('shelter remains active during warning and storm even at full health',()=>{
+  for(const weather of ['warning','storm']){
+    let s=running();s.weather=weather;s.weatherRemaining=10;
+    Object.assign(s.robots[0],LOCATIONS.cabin,{health:100,battery:70,task:'shelter',phase:'work'});
+    s=advance(s,1);assert.equal(s.robots[0].task,'shelter');assert.equal(s.robots[0].phase,'work');assert.equal(s.robots[0].battery,70);
+  }
+});
+test('the dock charges without healing, and completes the charge at full battery',()=>{
+  let s=running();Object.assign(s.robots[0],LOCATIONS.charger,{health:60,battery:98,task:'charge',phase:'work'});
+  s=tick(s);assert.equal(s.robots[0].battery,100);assert.equal(s.robots[0].health,60);assert.equal(s.robots[0].phase,'idle');
+});
+
+test('Live Jev receives productive choices after every robot recovers in clear weather',()=>{
+  let s=running();s.robots.forEach(r=>Object.assign(r,LOCATIONS.cabin,{health:100,battery:100,task:'shelter',phase:'work'}));
+  const stale=snapshot(s);s=tick(s);
+  const state=agentState(s),questions=buildQuestions(state.robots);
+  for(const r of state.robots){
+    assert.equal(r.needs_new_task,true);
+    assert.deepEqual(Object.keys(questions[r.id].criteria),['fish','harvest']);
+  }
+  const unchanged=assignDecisions(s,{pip:'shelter'},stale);
+  assert.equal(unchanged.robots[0].task,'wait');
+  s=assignDecisions(s,{pip:'fish',moss:'harvest',dot:'fish'},snapshot(s));
+  assert.ok(s.robots.every(r=>r.phase==='travel'));
+});
+
+test('Live Jev can continue storm shelter, then gets fresh work choices when skies clear',()=>{
+  let s=running();s.weather='storm';s.weatherRemaining=.25;
+  s.robots.forEach(r=>Object.assign(r,LOCATIONS.cabin,{health:100,battery:100,task:'shelter',phase:'work'}));
+  const during=buildQuestions(agentState(s).robots);
+  assert.ok(during.pip.criteria.shelter&&during.pip.criteria.continue);
+  s=tick(s);const after=buildQuestions(agentState(s).robots);
+  assert.equal(after.pip.criteria.shelter,undefined);assert.equal(after.pip.criteria.continue,undefined);
+  assert.equal(agentState(s).weather.seconds_until_storm,Math.ceil(s.weatherRemaining)+20);
+});
+
+test('empty battery at the cabin can reach the dock and recharge without healing there',()=>{
+  let s=running();Object.assign(s.robots[0],LOCATIONS.cabin,{health:100,battery:0});
+  assert.deepEqual(availableTasks(s,s.robots[0]),['charge']);
+  assert.equal(agentState(s).rules.cabin_battery_per_second,0);
+  s=assignDecisions(s,{pip:'charge'});s=advance(s,40);
+  assert.equal(s.robots[0].battery,100);assert.equal(s.robots[0].phase,'idle');
+  assert.deepEqual({x:s.robots[0].x,y:s.robots[0].y},LOCATIONS.charger);
 });

@@ -22,6 +22,26 @@ const speed=(r:Bot)=>r.battery>0?4:.7;
 export const travelSeconds=(r:Bot,p:Place)=>distance(r,p)/speed(r);
 export const isSheltered=(r:Bot)=>distance(r,'cabin')<.15;
 
+export function availableTasks(s:Simulation,r:Bot):Task[]{
+  if(r.phase==='dead')return ['wait'];
+  const options:Task[]=[];
+  const shelterNeeded=s.weather!=='clear'||r.health<100;
+  const continuing=(r.phase==='travel'||r.phase==='work')&&(
+    r.task==='shelter'?shelterNeeded:r.task==='charge'?r.battery<100:
+    r.task==='fish'?s.fish<100&&r.battery>0:
+    (r.task==='harvest'||r.task==='water')?s.crops<100&&r.battery>0:false);
+  if(continuing)options.push('continue');
+  if(s.fish<100&&r.battery>0)options.push('fish');
+  if(s.crops<100&&s.ripe>0&&r.battery>0)options.push('harvest');
+  if(s.crops<100&&s.moisture<60&&r.battery>0)options.push('water');
+  if(r.battery<100)options.push('charge');
+  if(shelterNeeded)options.push('shelter');
+  return options.length?options:['wait'];
+}
+function finishMaintenance(s:Simulation,r:Bot,text:string){
+  r.task='wait';r.phase='idle';r.remaining=0;r.duration=0;r.job++;
+  record(s,`${r.name}: ${text}; ready for a new task.`,'decision');
+}
 export function createSimulation(seed=1):Simulation{
   const s:Simulation={seed:seed>>>0,rng:seed>>>0,weatherRng:(seed^0x9e3779b9)>>>0,growthRng:(seed^0x85ebca6b)>>>0,time:0,status:'ready',fish:0,crops:0,moisture:65,ripe:12,growthRemaining:20,weather:'clear',weatherRemaining:80,weatherVersion:0,eventId:0,events:[],robots:([
     ['pip','Pip','pond',95],['moss','Moss','garden',85],['dot','Dot','charger',60]
@@ -30,6 +50,7 @@ export function createSimulation(seed=1):Simulation{
 }
 function begin(s:Simulation,r:Bot,task:Task){
   if(task==='continue'||r.phase==='dead')return;
+  if(!availableTasks(s,r).includes(task)){record(s,`${r.name}: task no longer useful; waiting for a fresh decision.`,'decision');return;}
   // Keeping the same job cannot reset its timer or reroll its reward.
   if(r.task===task && (r.phase==='travel'||r.phase==='work'))return;
   if(task==='harvest'&&s.ripe<=0){record(s,`${r.name}: harvest unavailable; continuing current task.`,'decision');return;}
@@ -67,7 +88,7 @@ export function tick(state:Simulation,dt=.25):Simulation{
     // Damage is based on actual location. Walking toward the cabin is not shelter.
     if(s.weather==='storm'&&!isSheltered(r))r.health=Math.max(0,r.health-6*dt);
     if(r.health<=0){r.phase='dead';r.job++;record(s,`${r.name} was lost in the storm.`,'danger');s.status='lost';continue;}
-    if(isSheltered(r)){r.health=Math.min(100,r.health+3*dt);r.battery=Math.min(100,r.battery+1.5*dt);}
+    if(isSheltered(r))r.health=Math.min(100,r.health+3*dt);
     if(r.phase==='travel'){
       const target=LOCATIONS[r.destination],d=distance(r,r.destination),step=Math.min(d,speed(r)*dt);
       if(d>0){r.x+=(target.x-r.x)*step/d;r.y+=(target.y-r.y)*step/d;}
@@ -76,8 +97,8 @@ export function tick(state:Simulation,dt=.25):Simulation{
       continue;
     }
     if(r.phase!=='work')continue;
-    if(r.task==='charge'){r.battery=Math.min(100,r.battery+8*dt);continue;}
-    if(r.task==='shelter')continue;
+    if(r.task==='charge'){r.battery=Math.min(100,r.battery+8*dt);if(r.battery>=100)finishMaintenance(s,r,'fully charged');continue;}
+    if(r.task==='shelter'){if(s.weather==='clear'&&r.health>=100)finishMaintenance(s,r,'repairs complete and skies clear');continue;}
     if(r.battery<=0)continue;
     r.battery=Math.max(0,r.battery-.45*dt);r.remaining=Math.max(0,r.remaining-dt);
     if(r.remaining>0)continue;
@@ -108,5 +129,5 @@ export function demoDecisions(s:Simulation):Decisions{
   return actions;
 }
 export function agentState(s:Simulation){
-  return {goal:{fish:100,crops:100,all_robots_must_survive:true},time:Math.round(s.time),progress:{fish:s.fish,crops:s.crops},weather:{phase:s.weather,seconds_remaining:Math.ceil(s.weatherRemaining)},garden:{ripe_crops:s.ripe,moisture:Math.round(s.moisture),growth_seconds_remaining:Math.ceil(s.growthRemaining)},robots:s.robots.map(r=>({id:r.id,name:r.name,health:Math.round(r.health),battery:Math.round(r.battery),task:r.task,phase:r.phase,destination:r.destination,task_seconds_remaining:Math.ceil(r.remaining),sheltered:isSheltered(r),travel_seconds_to_cabin:Math.ceil(travelSeconds(r,'cabin'))})),rules:{fish_attempt_seconds:[8,16],fish_yield:'18% no catch; 76% 1–5 fish; 6% 7–10 fish',harvest_seconds:[6,12],harvest_yield:[2,6],storm_damage_per_second:6,cabin_repairs_per_second:3,cabin_battery_per_second:1.5,charger_battery_per_second:8,charger_is_outdoors:true,zero_battery:'Work stops; emergency travel is much slower.',continue:'Preserves current task progress. Repeating the same active task also preserves progress.',cabin_and_charger_capacity:3},recent_events:s.events.slice(0,6).map(e=>e.text)};
+  return {goal:{fish:100,crops:100,all_robots_must_survive:true},time:Math.round(s.time),progress:{fish:s.fish,crops:s.crops},weather:{phase:s.weather,seconds_remaining:Math.ceil(s.weatherRemaining),seconds_until_storm:s.weather==='storm'?0:Math.ceil(s.weatherRemaining)+(s.weather==='clear'?20:0)},garden:{ripe_crops:s.ripe,moisture:Math.round(s.moisture),growth_seconds_remaining:Math.ceil(s.growthRemaining)},robots:s.robots.map(r=>({id:r.id,name:r.name,health:Math.round(r.health),battery:Math.round(r.battery),task:r.task,phase:r.phase,destination:r.destination,task_seconds_remaining:Math.ceil(r.remaining),sheltered:isSheltered(r),available_tasks:availableTasks(s,r),needs_new_task:r.phase==='idle',travel_seconds_to_cabin:Math.ceil(travelSeconds(r,'cabin'))})),rules:{fish_attempt_seconds:[8,16],fish_yield:'18% no catch; 76% 1–5 fish; 6% 7–10 fish',harvest_seconds:[6,12],harvest_yield:[2,6],storm_damage_per_second:6,cabin_repairs_per_second:3,cabin_battery_per_second:0,charger_battery_per_second:8,charger_is_outdoors:true,zero_battery:'Work stops; emergency travel is much slower.',continue:'Preserves an unfinished useful task. Charging ends at 100% battery; shelter ends at full health when skies are clear. Completed tasks cannot be continued.',cabin_and_charger_capacity:3},recent_events:s.events.slice(0,6).map(e=>e.text)};
 }
