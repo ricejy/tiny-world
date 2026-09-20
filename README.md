@@ -53,14 +53,16 @@ The game intentionally supports a small action vocabulary. Demo rules understand
 
 ## Autonomous survival mode
 
+Each page visit starts a new random seed; Replay seed repeats the same forecast. Reward bubbles show success, disappointment, or a lucky haul, and winning brings the crew together for a dance.
+
 Open `/autonomous` or choose **Autonomous run** in the sandbox. The objective is 100 fish and 100 crops with all three robots alive. Start with the explicitly labeled demo controller, or connect a session TypeSafe key to let Jev choose every task.
 
 - The simulation advances in 250 ms steps while running. Decisions are requested approximately every five simulated seconds, or after an important event with at least two seconds between requests. Only one request can be in flight; a run stops requesting after 200 attempts.
 - Each Jev request carries current progress, weather, crop state, robot health/battery/tasks, travel times to shelter, recent events, and mechanics. Three independent Choice questions choose tasks for Pip, Moss, and Dot. Each question contains only currently useful tasks: completed charging or clear-weather repairs cannot be continued or selected again. Completed maintenance returns a robot to idle and triggers a fresh decision. Shelter remains available through warnings and storms. Autonomous jobs persist through travel and one work cycle; repairs and charging complete before switching. Storm danger, critical health (35% or below), and low battery (below 20%) allow safety interruptions. Manual controls can interrupt any task. No generated explanations are displayed.
 - Fishing attempts last 8–16 seconds. Yields: 18% zero fish, 76% uniformly 1–5 fish, 6% uniformly 7–10 fish. Harvests last 6–12 seconds and yield 2–6 crops, bounded by shared ripe stock. Reassigning the same active job preserves its timer.
 - Crops regrow in batches of 4–8 every 18–28 seconds while moisture exceeds 20%. The garden holds at most 24 ripe crops.
-- Clear weather lasts 70–100 seconds, warnings last 20 seconds, and storms last 20–35 seconds. Storms deal 6 health per second outdoors, including on the way to shelter. The cabin repairs health at 3/s and never charges batteries. The outdoor dock charges batteries at 8/s and never repairs health.
-- Work consumes battery. At zero battery, work stops and emergency movement slows. A robot reaching zero health ends the run. There is no automatic rescue overriding Jev.
+- Clear weather lasts 50–80 seconds, warnings last 20 seconds, and storms last 18–32 seconds. Storms deal 6 health per second outdoors, including on the way to shelter. The cabin repairs health at 1.5/s and never charges batteries. The outdoor dock charges batteries at 4/s and never repairs health.
+- Travel consumes 0.65 battery/s and work consumes 0.95 battery/s. At zero battery, work stops and emergency movement slows. A robot reaching zero health ends the run. There is no automatic rescue overriding Jev.
 - Pause, reset, controller changes, and terminal outcomes invalidate pending responses. Weather changes discard stale responses; per-robot job versions prevent overwriting completed or manually interrupted tasks. API errors pause the run.
 - The page pauses when hidden. Closing or refreshing loses the run and the session key. This is a browser simulation, not a background server worker.
 - Seeds reproduce weather independently of work-related random draws. Identical seeds and identical decisions reproduce the complete run; different decisions consume work randomness differently and affect crop growth through moisture.

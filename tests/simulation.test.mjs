@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createSimulation,tick,assignDecisions,demoDecisions,snapshot,LOCATIONS,agentState,availableTasks} from '../lib/simulation.ts';
+import {createSimulation,tick,assignDecisions,demoDecisions,snapshot,LOCATIONS,agentState,availableTasks,BALANCE} from '../lib/simulation.ts';
 import {buildQuestions} from '../lib/autonomy-questions.ts';
 const running=(seed=42)=>({...createSimulation(seed),status:'running'});
 const advance=(s,seconds)=>{for(let t=0;t<seconds;t+=.25)s=tick(s);return s;};
@@ -73,7 +73,7 @@ test('baseline controller can complete several seeded runs without a hidden resc
 
 test('cabin heals health without charging the battery',()=>{
   let s=running();Object.assign(s.robots[0],LOCATIONS.cabin,{health:70,battery:30,task:'shelter',phase:'work'});
-  s=advance(s,2);assert.equal(s.robots[0].health,76);assert.equal(s.robots[0].battery,30);
+  s=advance(s,2);assert.equal(s.robots[0].health,73);assert.equal(s.robots[0].battery,30);
 });
 test('a recovered shelter task completes in clear weather and accepts a new work assignment',()=>{
   let s=running();Object.assign(s.robots[0],LOCATIONS.cabin,{health:100,battery:100,task:'shelter',phase:'work'});
@@ -90,7 +90,7 @@ test('shelter remains active during warning and storm even at full health',()=>{
 });
 test('the dock charges without healing, and completes the charge at full battery',()=>{
   let s=running();Object.assign(s.robots[0],LOCATIONS.charger,{health:60,battery:98,task:'charge',phase:'work'});
-  s=tick(s);assert.equal(s.robots[0].battery,100);assert.equal(s.robots[0].health,60);assert.equal(s.robots[0].phase,'idle');
+  s=advance(s,.5);assert.equal(s.robots[0].battery,100);assert.equal(s.robots[0].health,60);assert.equal(s.robots[0].phase,'idle');
 });
 
 test('Live Jev receives productive choices after every robot recovers in clear weather',()=>{
@@ -121,7 +121,7 @@ test('empty battery at the cabin can reach the dock and recharge without healing
   let s=running();Object.assign(s.robots[0],LOCATIONS.cabin,{health:100,battery:0});
   assert.deepEqual(availableTasks(s,s.robots[0]),['charge']);
   assert.equal(agentState(s).rules.cabin_battery_per_second,0);
-  s=assignDecisions(s,{pip:'charge'});s=advance(s,40);
+  s.weatherRemaining=100;s=assignDecisions(s,{pip:'charge'});s=advance(s,90);
   assert.equal(s.robots[0].battery,100);assert.equal(s.robots[0].phase,'idle');
   assert.deepEqual({x:s.robots[0].x,y:s.robots[0].y},LOCATIONS.charger);
 });
@@ -133,7 +133,7 @@ test('Moss cannot abandon unfinished cabin repairs for a harvest and bounce back
   assert.equal(question.criteria.harvest,undefined);
   s=assignDecisions(s,{moss:'harvest'},snapshot(s));s=advance(s,2);
   assert.equal(s.robots[1].task,'shelter');assert.equal(s.robots[1].x,LOCATIONS.cabin.x);
-  s=advance(s,6);assert.equal(s.robots[1].health,100);
+  s=advance(s,16);assert.equal(s.robots[1].health,100);
   s=assignDecisions(s,{moss:'harvest'},snapshot(s));assert.equal(s.robots[1].task,'harvest');
 });
 
@@ -175,4 +175,43 @@ test('manual controls can override autonomous commitment and invalidate pending 
   s=assignDecisions(s,{moss:'shelter'},undefined,true);
   assert.equal(s.robots[1].task,'shelter');
   s=assignDecisions(s,{moss:'harvest'},old);assert.equal(s.robots[1].task,'shelter');
+});
+
+test('energy and recovery use the new balance, also disclosed to Live Jev',()=>{
+  let s=running();Object.assign(s.robots[0],LOCATIONS.pond,{battery:90});s=assignDecisions(s,{pip:'fish'});
+  s=advance(s,1);assert.ok(Math.abs(s.robots[0].battery-89.05)<1e-8);
+  s=running();Object.assign(s.robots[0],LOCATIONS.charger,{battery:50,health:70});s=assignDecisions(s,{pip:'charge'});
+  s=advance(s,1);assert.equal(s.robots[0].battery,54);assert.equal(s.robots[0].health,70);
+  const state=agentState(s);assert.equal(state.rules.charger_battery_per_second,4);assert.equal(state.rules.cabin_repairs_per_second,1.5);
+  assert.ok(state.robots[0].travel_seconds_to_cabin>=9);
+});
+
+test('random storms arrive more often and replay exactly for a seed',()=>{
+  const lengths=new Set();
+  for(let seed=1;seed<=30;seed++){
+    let s=running(seed);assert.ok(s.weatherRemaining>=50&&s.weatherRemaining<=80);lengths.add(s.weatherRemaining);
+    s.robots.forEach(r=>Object.assign(r,LOCATIONS.cabin));
+    s.weatherRemaining=.25;s=tick(s);assert.equal(s.weather,'warning');assert.equal(s.weatherRemaining,20);
+    s=advance(s,20);assert.equal(s.weather,'storm');assert.ok(s.weatherRemaining>=18&&s.weatherRemaining<=32);
+  }
+  assert.equal(lengths.size,30);
+});
+
+test('fishing reactions match actual no-catch, ordinary, and lucky rewards without consuming randomness',()=>{
+  const seen=new Set();
+  for(let seed=1;seed<=100;seed++){
+    let s=assignDecisions(running(seed),{pip:'fish'});s=advance(s,17);
+    const reaction=s.robots[0].reaction;assert.ok(reaction);seen.add(reaction.kind);
+    assert.equal(reaction.kind,s.fish>=7?'lucky':s.fish?'happy':'sad');
+    assert.ok(reaction.until>s.events.find(e=>e.id===reaction.id).time);
+    const publicBot=agentState(s).robots[0];assert.equal(publicBot.reaction,undefined);
+  }
+  assert.deepEqual([...seen].sort(),['happy','lucky','sad']);
+});
+
+test('harvest reactions distinguish a collected crop from exhausted shared stock',()=>{
+  let s=running();s.ripe=1;s.growthRemaining=28;s.robots.forEach(r=>Object.assign(r,LOCATIONS.garden));
+  s=assignDecisions(s,{pip:'harvest',moss:'harvest',dot:'harvest'});s=advance(s,13);
+  assert.equal(s.crops,1);assert.equal(s.robots.filter(r=>r.reaction?.kind==='happy').length,1);
+  assert.equal(s.robots.filter(r=>r.reaction?.kind==='sad').length,2);
 });
